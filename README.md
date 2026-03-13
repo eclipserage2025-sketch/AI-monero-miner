@@ -11,7 +11,7 @@ A high-performance Monero (XMR) CPU miner written in modern C++20, featuring a b
 | Feature | Description |
 |---|---|
 | **RandomX** | Full RandomX PoW via [tevador/RandomX](https://github.com/tevador/RandomX) |
-| **Neural-Net Optimizer** | Lightweight feedforward NN auto-tunes thread count, CPU affinity, and intensity every N seconds |
+| **Neural-Net Optimizer** | Lightweight feedforward NN with **Adam optimizer** and **experience replay** auto-tunes thread count, CPU affinity, and intensity every N seconds |
 | **System Monitor** | Reads CPU temperature, frequency, load, and power draw to feed the optimizer |
 | **Stratum v1** | Pool mining with keepalive, reconnect, and job caching |
 | **NUMA Awareness** | Optional hwloc integration for topology-aware thread pinning |
@@ -28,9 +28,15 @@ A high-performance Monero (XMR) CPU miner written in modern C++20, featuring a b
 - CMake ≥ 3.16
 - C++20 compiler (GCC 11+, Clang 14+, MSVC 2022+)
 - Git (for submodules)
-- *Optional:* hwloc, for NUMA-aware pinning
+- *Optional:* hwloc, for NUMA-aware pinning (Linux/macOS only)
 
-### Steps
+#### Windows Prerequisites
+
+- **Visual Studio 2022** with "Desktop development with C++" workload, **or**
+- **MinGW-w64** (GCC 12+ recommended) with CMake and Ninja/Make
+- Git for Windows
+
+### Linux / macOS
 
 ```bash
 git clone --recursive https://github.com/YOUR_USER/ai-monero-miner.git
@@ -38,6 +44,28 @@ cd ai-monero-miner
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
+```
+
+### Windows — Visual Studio (MSVC)
+
+```powershell
+git clone --recursive https://github.com/YOUR_USER/ai-monero-miner.git
+cd ai-monero-miner
+mkdir build && cd build
+cmake .. -G "Visual Studio 17 2022" -A x64
+cmake --build . --config Release
+```
+
+The resulting binary will be in `build\Release\ai-monero-miner.exe`.
+
+### Windows — MinGW
+
+```powershell
+git clone --recursive https://github.com/YOUR_USER/ai-monero-miner.git
+cd ai-monero-miner
+mkdir build && cd build
+cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j%NUMBER_OF_PROCESSORS%
 ```
 
 ### Quick Start
@@ -52,14 +80,14 @@ cp config/default_config.json config/user_config.json
 
 ## 🧠 How the AI Optimizer Works
 
-The optimizer is a small **feedforward neural network** trained online via back-propagation:
+The optimizer is a small **feedforward neural network** trained online via **Adam** (Adaptive Moment Estimation) with **experience replay**:
 
 1. **Observe** — the `SystemMonitor` samples CPU metrics (temperature, load, frequency, power) and the current hash rate every tick.
 2. **Predict** — the NN receives the state vector and outputs a set of *candidate mining parameters* (thread count, intensity per thread, sleep intervals).
 3. **Act** — the miner applies the new parameters for the next optimization window.
-4. **Learn** — after the window, the actual hash-rate delta and a power-efficiency reward signal are used to compute loss and update weights via SGD.
+4. **Learn** — after the window, the experience (state, action, reward) is stored in a circular **replay buffer**. A mini-batch of past experiences is sampled and used to update weights via **Adam** with **gradient clipping**.
 
-An **ε-greedy exploration** strategy occasionally tries random parameter perturbations to escape local optima.
+An **ε-greedy exploration** strategy with **exponential decay** occasionally tries random parameter perturbations to escape local optima. A **moving-average reward baseline** reduces variance during training.
 
 ### State Vector (inputs)
 
@@ -101,9 +129,9 @@ ai-monero-miner/
 │   │   ├── stratum_client.h / .cpp # Stratum v1 pool client
 │   │   └── job.h                   # Mining job struct
 │   ├── ai/
-│   │   ├── optimizer.h / .cpp      # AI optimisation loop
-│   │   ├── neural_net.h / .cpp     # Feedforward NN
-│   │   └── system_monitor.h / .cpp # CPU / power telemetry
+│   │   ├── optimizer.h / .cpp      # AI optimisation loop (experience replay, Adam)
+│   │   ├── neural_net.h / .cpp     # Feedforward NN with Adam optimizer
+│   │   └── system_monitor.h / .cpp # CPU / power telemetry (cross-platform)
 │   ├── crypto/
 │   │   └── randomx_handler.h / .cpp
 │   └── utils/
@@ -123,10 +151,16 @@ See [`config/default_config.json`](config/default_config.json) for all options. 
 |---|---|---|
 | `ai.enabled` | `true` | Enable / disable the neural-net optimizer |
 | `ai.optimization_interval_sec` | `30` | Seconds between optimization ticks |
-| `ai.learning_rate` | `0.001` | SGD learning rate |
+| `ai.learning_rate` | `0.001` | Adam learning rate |
 | `ai.hidden_layers` | `[64, 32]` | NN hidden-layer sizes |
-| `ai.exploration_rate` | `0.15` | ε-greedy exploration probability |
+| `ai.exploration_rate` | `0.15` | Initial ε-greedy exploration probability |
+| `ai.exploration_decay` | `0.999` | Multiplicative decay per tick for ε |
+| `ai.min_exploration_rate` | `0.02` | Floor for exploration rate |
 | `ai.target_temp_celsius` | `80` | Thermal throttle target |
+| `ai.adam_beta1` | `0.9` | Adam first moment decay |
+| `ai.adam_beta2` | `0.999` | Adam second moment decay |
+| `ai.replay_batch_size` | `16` | Mini-batch size for experience replay |
+| `ai.history_window` | `500` | Capacity of the experience replay buffer |
 
 ---
 

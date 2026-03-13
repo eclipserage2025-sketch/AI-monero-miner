@@ -60,6 +60,11 @@ void Config::load(const std::string& path) {
         ai_.power_aware               = a.value("power_aware", ai_.power_aware);
         ai_.target_temp_celsius       = a.value("target_temp_celsius", ai_.target_temp_celsius);
         ai_.history_window            = a.value("history_window", ai_.history_window);
+        ai_.adam_beta1                = a.value("adam_beta1", ai_.adam_beta1);
+        ai_.adam_beta2                = a.value("adam_beta2", ai_.adam_beta2);
+        ai_.replay_batch_size         = a.value("replay_batch_size", ai_.replay_batch_size);
+        ai_.exploration_decay         = a.value("exploration_decay", ai_.exploration_decay);
+        ai_.min_exploration_rate      = a.value("min_exploration_rate", ai_.min_exploration_rate);
         if (a.contains("hidden_layers"))
             ai_.hidden_layers = a["hidden_layers"].get<std::vector<int>>();
     }

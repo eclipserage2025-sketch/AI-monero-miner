@@ -1,5 +1,7 @@
 #include "utils/logger.h"
 
+#include <ctime>
+
 namespace aiminer::utils {
 
 void Logger::init(LogLevel level, const std::string& file_path) {
@@ -18,8 +20,24 @@ Logger& Logger::instance() {
 void Logger::write(LogLevel level, std::string_view msg) {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
+
     char time_buf[64];
-    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t_now));
+    std::tm tm_buf{};
+
+#if defined(_MSC_VER)
+    // MSVC: localtime_s has (tm*, time_t*) parameter order
+    localtime_s(&tm_buf, &time_t_now);
+#elif defined(__STDC_LIB_EXT1__) || defined(_POSIX_C_SOURCE) || defined(__linux__) || defined(__APPLE__)
+    localtime_r(&time_t_now, &tm_buf);
+#else
+    // Fallback: mutex already held above, use localtime with our lock
+    {
+        std::tm* tmp = std::localtime(&time_t_now);
+        if (tmp) tm_buf = *tmp;
+    }
+#endif
+
+    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &tm_buf);
 
     std::lock_guard lock(mtx_);
     auto line = std::format("[{}] [{}] {}\n", time_buf, level_str(level), msg);

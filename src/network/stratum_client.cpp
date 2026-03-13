@@ -1,9 +1,11 @@
 #include "network/stratum_client.h"
 
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#ifndef _WIN32
+#   include <arpa/inet.h>
+#   include <netdb.h>
+#   include <sys/socket.h>
+#   include <unistd.h>
+#endif
 
 #include <cstring>
 #include <nlohmann/json.hpp>
@@ -53,9 +55,26 @@ static uint64_t target_to_uint64(const std::string& hex) {
 }
 
 // ── Constructor / Destructor ────────────────────────────────────────────────
-StratumClient::StratumClient(const utils::PoolConfig& cfg) : cfg_(cfg) {}
+StratumClient::StratumClient(const utils::PoolConfig& cfg) : cfg_(cfg) {
+#ifdef _WIN32
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0) {
+        wsa_initialized_ = true;
+    } else {
+        LOG_ERR("WSAStartup failed");
+    }
+#endif
+}
 
-StratumClient::~StratumClient() { disconnect(); }
+StratumClient::~StratumClient() {
+    disconnect();
+#ifdef _WIN32
+    if (wsa_initialized_) {
+        WSACleanup();
+        wsa_initialized_ = false;
+    }
+#endif
+}
 
 // ── Connect ─────────────────────────────────────────────────────────────────
 void StratumClient::connect() {
@@ -84,14 +103,23 @@ void StratumClient::connect() {
         throw std::runtime_error("DNS resolution failed for " + host);
 
     sock_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+#ifdef _WIN32
+    if (sock_ == INVALID_SOCKET) {
+#else
     if (sock_ < 0) {
+#endif
         freeaddrinfo(res);
         throw std::runtime_error("Socket creation failed");
     }
 
-    if (::connect(sock_, res->ai_addr, res->ai_addrlen) < 0) {
+    if (::connect(sock_, res->ai_addr, static_cast<int>(res->ai_addrlen)) != 0) {
         freeaddrinfo(res);
+#ifdef _WIN32
+        closesocket(sock_);
+#else
         ::close(sock_);
+#endif
+        sock_ = INVALID_SOCK;
         throw std::runtime_error("Connection to pool failed");
     }
     freeaddrinfo(res);
@@ -107,10 +135,15 @@ void StratumClient::connect() {
 void StratumClient::disconnect() {
     running_ = false;
     connected_ = false;
-    if (sock_ >= 0) {
+    if (sock_ != INVALID_SOCK) {
+#ifdef _WIN32
+        ::shutdown(sock_, SD_BOTH);
+        closesocket(sock_);
+#else
         ::shutdown(sock_, SHUT_RDWR);
         ::close(sock_);
-        sock_ = -1;
+#endif
+        sock_ = INVALID_SOCK;
     }
     if (recv_thread_.joinable()) recv_thread_.join();
 }
@@ -124,7 +157,7 @@ void StratumClient::do_login() {
         {"params", {
             {"login", cfg_.user},
             {"pass",  cfg_.pass},
-            {"agent", "ai-monero-miner/0.1.0"}
+            {"agent", "ai-monero-miner/0.2.0"}
         }}
     };
     send(req.dump() + "\n");
@@ -158,7 +191,11 @@ void StratumClient::recv_loop() {
     std::string buffer;
     char chunk[4096];
     while (running_) {
+#ifdef _WIN32
+        int n = ::recv(sock_, chunk, sizeof(chunk) - 1, 0);
+#else
         ssize_t n = ::recv(sock_, chunk, sizeof(chunk) - 1, 0);
+#endif
         if (n <= 0) {
             if (running_) LOG_WARN("Pool connection lost");
             connected_ = false;
@@ -224,8 +261,8 @@ void StratumClient::handle_message(const std::string& line) {
 // ── Send ────────────────────────────────────────────────────────────────────
 void StratumClient::send(const std::string& msg) {
     std::lock_guard lock(send_mtx_);
-    if (sock_ >= 0)
-        ::send(sock_, msg.c_str(), msg.size(), 0);
+    if (sock_ != INVALID_SOCK)
+        ::send(sock_, msg.c_str(), static_cast<int>(msg.size()), 0);
 }
 
 }  // namespace aiminer::network

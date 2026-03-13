@@ -32,6 +32,17 @@ struct AIConfig {
     bool power_aware = true;
     double target_temp_celsius = 80.0;
     int history_window = 500;
+
+    // Adam optimizer parameters
+    double adam_beta1 = 0.9;
+    double adam_beta2 = 0.999;
+
+    // Experience replay
+    int replay_batch_size = 16;
+
+    // Exploration decay
+    double exploration_decay = 0.999;
+    double min_exploration_rate = 0.02;
 };
 
 class Config {

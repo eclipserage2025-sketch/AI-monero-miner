@@ -11,3 +11,18 @@ compile_commands.json
 *.swp
 *.swo
 config/user_config.json
+
+# Windows build artifacts
+*.exe
+*.obj
+*.pdb
+*.lib
+*.dll
+*.exp
+Debug/
+Release/
+x64/
+x86/
+.vs/
+*.user
+*.vcxproj.filters

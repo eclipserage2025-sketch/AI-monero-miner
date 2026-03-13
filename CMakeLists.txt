@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ai-monero-miner VERSION 0.1.0 LANGUAGES CXX)
+project(ai-monero-miner VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(USE_HWLOC   "Enable hwloc for NUMA / topology awareness" ON)
 option(BUILD_TESTS "Build unit tests"                           OFF)
 
+# ── Platform-specific compile definitions & flags ────────────────────────────
+if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+    add_compile_options(/W3 /permissive- /Zc:__cplusplus /EHsc)
+else()
+    add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
 # ── Dependencies ─────────────────────────────────────────────────────────────
 find_package(Threads REQUIRED)
 
@@ -16,10 +24,12 @@ find_package(Threads REQUIRED)
 add_subdirectory(third_party/RandomX EXCLUDE_FROM_ALL)
 
 if(USE_HWLOC)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(HWLOC IMPORTED_TARGET hwloc)
-    if(HWLOC_FOUND)
-        add_compile_definitions(HAS_HWLOC)
+    if(NOT WIN32)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(HWLOC IMPORTED_TARGET hwloc)
+        if(HWLOC_FOUND)
+            add_compile_definitions(HAS_HWLOC)
+        endif()
     endif()
 endif()
 
@@ -48,6 +58,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 if(HWLOC_FOUND)
     target_link_libraries(${PROJECT_NAME} PRIVATE PkgConfig::HWLOC)
+endif()
+
+# ── Windows-specific libraries ───────────────────────────────────────────────
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 pdh iphlpapi ole32 oleaut32 wbemuuid)
 endif()
 
 # ── Install ──────────────────────────────────────────────────────────────────

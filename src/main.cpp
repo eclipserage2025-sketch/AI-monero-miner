@@ -1,4 +1,10 @@
-#include <csignal>
+#ifdef _WIN32
+#   define WIN32_LEAN_AND_MEAN
+#   include <windows.h>
+#else
+#   include <csignal>
+#endif
+
 #include <iostream>
 #include <string>
 
@@ -8,12 +14,30 @@
 
 static aiminer::core::Miner* g_miner = nullptr;
 
+#ifdef _WIN32
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
+    switch (ctrl_type) {
+        case CTRL_C_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_BREAK_EVENT:
+            if (g_miner) {
+                LOG_INFO("Caught console control event {}, shutting down…",
+                         static_cast<int>(ctrl_type));
+                g_miner->stop();
+            }
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#else
 static void signal_handler(int sig) {
     if (g_miner) {
         LOG_INFO("Caught signal {}, shutting down…", sig);
         g_miner->stop();
     }
 }
+#endif
 
 static void print_banner() {
     std::cout << R"(
@@ -22,7 +46,7 @@ static void print_banner() {
    / _ \  | |  | |\/| |/ _ \| '_ \ / _ \ '__/ _ \ |\/| | | '_ \ / _ \ '__|
   / ___ \ | |  | |  | | (_) | | | |  __/ | | (_) | |  | | | | | |  __/ |
  /_/   \_\___| |_|  |_|\___/|_| |_|\___|_|  \___/|_|  |_|_|_| |_|\___|_|
-                   v0.1.0  —  Neural-Net Optimised XMR Mining
+                   v0.2.0  —  Neural-Net Optimised XMR Mining
 )" << std::endl;
 }
 
@@ -50,8 +74,12 @@ int main(int argc, char* argv[]) {
         aiminer::core::Miner miner(cfg);
         g_miner = &miner;
 
+#ifdef _WIN32
+        SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+#else
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
+#endif
 
         miner.start();
         miner.wait();  // blocks until stopped

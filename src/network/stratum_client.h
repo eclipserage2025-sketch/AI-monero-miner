@@ -7,6 +7,17 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#   define WIN32_LEAN_AND_MEAN
+#   include <winsock2.h>
+#   include <ws2tcpip.h>
+    using socket_t = SOCKET;
+    constexpr socket_t INVALID_SOCK = INVALID_SOCKET;
+#else
+    using socket_t = int;
+    constexpr socket_t INVALID_SOCK = -1;
+#endif
+
 #include "network/job.h"
 #include "utils/config.h"
 
@@ -35,7 +46,7 @@ private:
     void do_login();
 
     utils::PoolConfig cfg_;
-    int sock_ = -1;
+    socket_t sock_ = INVALID_SOCK;
     std::atomic<bool> connected_{false};
     std::atomic<bool> running_{false};
     std::thread recv_thread_;
@@ -43,6 +54,10 @@ private:
     JobCallback job_cb_;
     int req_id_ = 1;
     std::string rpc_id_;
+
+#ifdef _WIN32
+    bool wsa_initialized_ = false;
+#endif
 };
 
 }  // namespace aiminer::network
