@@ -1,0 +1,30 @@
+{
+    "pool": {
+        "url": "stratum+tcp://pool.example.com:3333",
+        "user": "YOUR_WALLET_ADDRESS",
+        "pass": "x",
+        "keepalive": true,
+        "tls": false
+    },
+    "mining": {
+        "threads": 0,
+        "cpu_affinity": [],
+        "priority": 2,
+        "huge_pages": true
+    },
+    "ai": {
+        "enabled": true,
+        "optimization_interval_sec": 30,
+        "learning_rate": 0.001,
+        "hidden_layers": [64, 32],
+        "exploration_rate": 0.15,
+        "power_aware": true,
+        "target_temp_celsius": 80,
+        "history_window": 500
+    },
+    "logging": {
+        "level": "info",
+        "file": "",
+        "print_hashrate_sec": 10
+    }
+}
