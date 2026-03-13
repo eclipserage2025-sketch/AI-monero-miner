@@ -1,1 +1,143 @@
+name: Build Precompiled RandomX
 
+on:
+  workflow_dispatch:
+    inputs:
+      randomx_ref:
+        description: 'RandomX Git ref (tag/branch/commit)'
+        default: 'master'
+        required: false
+  push:
+    tags:
+      - 'randomx-v*'
+
+env:
+  RANDOMX_REF: ${{ github.event.inputs.randomx_ref || 'master' }}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            arch: x86_64
+            lib_name: librandomx.a
+            archive: tar.gz
+          - os: ubuntu-22.04
+            platform: linux-arm64
+            arch: aarch64
+            lib_name: librandomx.a
+            archive: tar.gz
+            cross: true
+          - os: macos-13
+            platform: macos-x64
+            arch: x86_64
+            lib_name: librandomx.a
+            archive: tar.gz
+          - os: macos-14
+            platform: macos-arm64
+            arch: arm64
+            lib_name: librandomx.a
+            archive: tar.gz
+          - os: windows-latest
+            platform: windows-x64
+            arch: x64
+            lib_name: randomx.lib
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cross-compiler (Linux ARM64)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Clone RandomX
+        run: git clone --depth 1 --branch ${{ env.RANDOMX_REF }} https://github.com/tevador/RandomX.git randomx-src
+
+      - name: Build RandomX (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p randomx-src/build
+          cd randomx-src/build
+          CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64"
+          fi
+          cmake .. $CMAKE_ARGS
+          cmake --build . --config Release -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+
+      - name: Build RandomX (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir randomx-src\build
+          cd randomx-src\build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p package
+          cp randomx-src/build/${{ matrix.lib_name }} package/
+          cp randomx-src/src/randomx.h package/
+          cd package
+          tar -czf ../randomx-${{ matrix.platform }}.tar.gz .
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package -Force
+          $libPath = "randomx-src/build/Release/${{ matrix.lib_name }}"
+          if (-not (Test-Path $libPath)) { $libPath = "randomx-src/build/${{ matrix.lib_name }}" }
+          Copy-Item $libPath -Destination package/
+          Copy-Item "randomx-src/src/randomx.h" -Destination package/
+          Compress-Archive -Path "package/*" -DestinationPath "randomx-${{ matrix.platform }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: randomx-${{ matrix.platform }}
+          path: randomx-${{ matrix.platform }}.${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Precompiled RandomX Libraries
+
+            | Platform | File |
+            |----------|------|
+            | Linux x64 | `randomx-linux-x64.tar.gz` |
+            | Linux ARM64 | `randomx-linux-arm64.tar.gz` |
+            | macOS x64 | `randomx-macos-x64.tar.gz` |
+            | macOS ARM64 | `randomx-macos-arm64.tar.gz` |
+            | Windows x64 | `randomx-windows-x64.zip` |
+
+            ### Usage
+            1. Download the archive for your platform
+            2. Extract to `third_party/randomx/lib/<platform>/` and `third_party/randomx/include/`
+            3. Or run `scripts/download-randomx.sh` (Linux/macOS) or `scripts/download-randomx.ps1` (Windows)
