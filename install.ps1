@@ -1,13 +1,13 @@
 #=============================================================================
 # AI Monero Miner — Auto Install Script (Windows PowerShell)
-# Usage:  Set-ExecutionPolicy Bypass -Scope Process; .\install.ps1
+# Usage:  Set-ExecutionPolicy Bypass -Scope Process; .\install.ps1 [-FromSource]
 #=============================================================================
 #Requires -Version 5.1
 
 param(
     [string]$BuildType = "Release",
     [switch]$SkipDeps,
-    [switch]$SkipRandomX
+    [switch]$FromSource
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 function Write-Banner {
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║       AI Monero Miner — Auto Installer v0.2.0   ║" -ForegroundColor Cyan
+    Write-Host "  ║       AI Monero Miner — Auto Installer v0.3.0   ║" -ForegroundColor Cyan
     Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -34,19 +34,19 @@ function Get-CpuCount {
     return [Environment]::ProcessorCount
 }
 
+$script:UsePrecompiled = $false
+
 # ── Check Prerequisites ───────────────────────────────────────────────────
 function Test-Prerequisites {
     Write-Step "Checking prerequisites..."
     $missing = @()
 
-    # Check for Visual Studio Build Tools or MSVC
     $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     $hasVS = $false
     if (Test-Path $vsWhere) {
         $vsInstalls = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
         if ($vsInstalls) { $hasVS = $true }
     }
-    # Also check for cl.exe in PATH (for Developer Command Prompt)
     if (-not $hasVS -and -not (Test-Command "cl")) {
         $missing += "Visual Studio 2022 Build Tools (with C++ workload)"
     }
@@ -134,7 +134,6 @@ function Install-Dependencies {
 
     $vcpkg = Join-Path $vcpkgDir "vcpkg.exe"
 
-    # Detect architecture
     $triplet = "x64-windows"
     Write-Info "Installing packages for triplet: $triplet"
 
@@ -152,15 +151,50 @@ function Install-Dependencies {
     return $vcpkgDir
 }
 
-# ── Build RandomX ─────────────────────────────────────────────────────────
-function Build-RandomX {
-    if ($SkipRandomX) {
-        Write-Warn "Skipping RandomX build (-SkipRandomX)."
+# ── Setup RandomX ─────────────────────────────────────────────────────────
+function Setup-RandomX {
+    $precompiledDir = Join-Path $PSScriptRoot "third_party\randomx"
+    $platform = "windows-x64"
+    $libName = "randomx.lib"
+    $libPath = Join-Path $precompiledDir "lib\$platform\$libName"
+    $headerPath = Join-Path $precompiledDir "include\randomx.h"
+
+    if ($FromSource) {
+        Write-Step "Building RandomX from source (-FromSource)..."
+        Build-RandomXFromSource
         return
     }
 
-    Write-Step "Building RandomX library..."
+    # Check if precompiled binary already exists
+    if ((Test-Path $libPath) -and (Test-Path $headerPath)) {
+        Write-Step "Using precompiled RandomX..."
+        Write-Info "Found precompiled RandomX at $libPath"
+        $script:UsePrecompiled = $true
+        return
+    }
 
+    # Try downloading precompiled binary
+    Write-Step "Downloading precompiled RandomX..."
+    $downloadScript = Join-Path $PSScriptRoot "scripts\download-randomx.ps1"
+    if (Test-Path $downloadScript) {
+        try {
+            & $downloadScript
+            if ((Test-Path $libPath) -and (Test-Path $headerPath)) {
+                Write-Info "Precompiled RandomX downloaded successfully."
+                $script:UsePrecompiled = $true
+                return
+            }
+        } catch {
+            Write-Warn "Download failed: $_"
+        }
+    }
+
+    # Fallback: build from source
+    Write-Warn "Precompiled RandomX not available. Building from source..."
+    Build-RandomXFromSource
+}
+
+function Build-RandomXFromSource {
     $depsDir = Join-Path $PSScriptRoot "deps"
     $randomxDir = Join-Path $depsDir "RandomX"
 
@@ -183,16 +217,29 @@ function Build-RandomX {
     cmake --build . --config $BuildType -j (Get-CpuCount)
     Pop-Location
 
-    Write-Info "RandomX built successfully."
-    return @{
-        LibDir = $buildDir
-        IncDir = Join-Path $randomxDir "src"
-    }
+    # Cache into precompiled directory for future use
+    $precompiledDir = Join-Path $PSScriptRoot "third_party\randomx"
+    $platform = "windows-x64"
+    $libName = "randomx.lib"
+
+    $includeDir = Join-Path $precompiledDir "include"
+    $libDir = Join-Path $precompiledDir "lib\$platform"
+    New-Item -ItemType Directory -Path $includeDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+
+    $builtLib = Join-Path $buildDir "$BuildType\$libName"
+    if (-not (Test-Path $builtLib)) { $builtLib = Join-Path $buildDir $libName }
+    if (Test-Path $builtLib) { Copy-Item $builtLib -Destination $libDir -Force }
+    $headerSrc = Join-Path $randomxDir "src\randomx.h"
+    if (Test-Path $headerSrc) { Copy-Item $headerSrc -Destination $includeDir -Force }
+
+    $script:UsePrecompiled = $true
+    Write-Info "RandomX built and cached in $precompiledDir"
 }
 
 # ── Build the Miner ──────────────────────────────────────────────────────
 function Build-Miner {
-    param($RandomXPaths, $VcpkgDir)
+    param($VcpkgDir)
 
     Write-Step "Building AI Monero Miner..."
 
@@ -206,22 +253,21 @@ function Build-Miner {
         "-DCMAKE_BUILD_TYPE=$BuildType"
     )
 
+    # Precompiled RandomX
+    if ($script:UsePrecompiled) {
+        $cmakeArgs += "-DUSE_PRECOMPILED_RANDOMX=ON"
+        Write-Info "Using precompiled RandomX libraries."
+    } else {
+        $cmakeArgs += "-DUSE_PRECOMPILED_RANDOMX=OFF"
+        Write-Info "RandomX will be built via FetchContent."
+    }
+
     # vcpkg toolchain
     if ($VcpkgDir) {
         $toolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
         if (Test-Path $toolchain) {
             $cmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
         }
-    }
-
-    # RandomX paths
-    if ($RandomXPaths) {
-        $libFile = Join-Path $RandomXPaths.LibDir "$BuildType\randomx.lib"
-        if (-not (Test-Path $libFile)) {
-            $libFile = Join-Path $RandomXPaths.LibDir "randomx.lib"
-        }
-        $cmakeArgs += "-DRANDOMX_INCLUDE_DIR=$($RandomXPaths.IncDir)"
-        $cmakeArgs += "-DRANDOMX_LIBRARY=$libFile"
     }
 
     cmake @cmakeArgs
@@ -268,6 +314,12 @@ function Write-Summary {
     Write-Host "    .\build\$BuildType\ai-monero-miner.exe"
     Write-Host "    .\build\$BuildType\ai-monero-miner.exe --config C:\path\to\config.json"
     Write-Host ""
+    if ($script:UsePrecompiled) {
+        Write-Host "  ⚡ RandomX: precompiled (fast install)" -ForegroundColor Green
+    } else {
+        Write-Host "  🔧 RandomX: built via FetchContent" -ForegroundColor Yellow
+    }
+    Write-Host ""
     Write-Host "══════════════════════════════════════════════════════" -ForegroundColor Cyan
 }
 
@@ -276,8 +328,8 @@ function Main {
     Write-Banner
     Test-Prerequisites
     $vcpkgDir = Install-Dependencies
-    $randomxPaths = Build-RandomX
-    Build-Miner -RandomXPaths $randomxPaths -VcpkgDir $vcpkgDir
+    Setup-RandomX
+    Build-Miner -VcpkgDir $vcpkgDir
     Setup-Config
     Write-Summary
 }

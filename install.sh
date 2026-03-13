@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 #=============================================================================
 # AI Monero Miner — Auto Install Script (Linux / macOS)
-# Usage:  chmod +x install.sh && ./install.sh
+# Usage:  chmod +x install.sh && ./install.sh [--from-source]
 #=============================================================================
 set -euo pipefail
+
+FROM_SOURCE=false
+for arg in "$@"; do
+  case "$arg" in
+    --from-source) FROM_SOURCE=true ;;
+  esac
+done
 
 # ── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -12,7 +19,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 banner() {
   echo -e "${CYAN}"
   echo "  ╔══════════════════════════════════════════════════╗"
-  echo "  ║       AI Monero Miner — Auto Installer v0.2.0   ║"
+  echo "  ║       AI Monero Miner — Auto Installer v0.3.0   ║"
   echo "  ╚══════════════════════════════════════════════════╝"
   echo -e "${NC}"
 }
@@ -119,10 +126,61 @@ install_deps() {
   info "System dependencies installed."
 }
 
-# ── Clone & Build RandomX ──────────────────────────────────────────────────
-build_randomx() {
-  step "Building RandomX library..."
+# ── Setup RandomX ──────────────────────────────────────────────────────────
+setup_randomx() {
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  PRECOMPILED_DIR="$SCRIPT_DIR/third_party/randomx"
 
+  # Detect platform for precompiled check
+  case "$OS" in
+    Linux*)
+      case "$ARCH" in
+        x86_64|amd64)   PLATFORM="linux-x64"   ; LIB_NAME="librandomx.a" ;;
+        aarch64|arm64)  PLATFORM="linux-arm64"  ; LIB_NAME="librandomx.a" ;;
+        *)              PLATFORM="unknown"      ; LIB_NAME="librandomx.a" ;;
+      esac
+      ;;
+    Darwin*)
+      case "$ARCH" in
+        x86_64|amd64)   PLATFORM="macos-x64"   ; LIB_NAME="librandomx.a" ;;
+        arm64|aarch64)  PLATFORM="macos-arm64"  ; LIB_NAME="librandomx.a" ;;
+        *)              PLATFORM="unknown"      ; LIB_NAME="librandomx.a" ;;
+      esac
+      ;;
+  esac
+
+  if [[ "$FROM_SOURCE" == "true" ]]; then
+    step "Building RandomX from source (--from-source)..."
+    build_randomx_from_source
+    return
+  fi
+
+  # Check if precompiled binary already exists
+  if [[ -f "$PRECOMPILED_DIR/lib/$PLATFORM/$LIB_NAME" ]] && [[ -f "$PRECOMPILED_DIR/include/randomx.h" ]]; then
+    step "Using precompiled RandomX..."
+    info "Precompiled RandomX found at $PRECOMPILED_DIR/lib/$PLATFORM/$LIB_NAME"
+    USE_PRECOMPILED=true
+    return
+  fi
+
+  # Try downloading precompiled binary
+  step "Downloading precompiled RandomX..."
+  if [[ -x "$SCRIPT_DIR/scripts/download-randomx.sh" ]]; then
+    if "$SCRIPT_DIR/scripts/download-randomx.sh"; then
+      if [[ -f "$PRECOMPILED_DIR/lib/$PLATFORM/$LIB_NAME" ]]; then
+        info "Precompiled RandomX downloaded successfully."
+        USE_PRECOMPILED=true
+        return
+      fi
+    fi
+  fi
+
+  # Fallback: build from source
+  warn "Precompiled RandomX not available. Building from source..."
+  build_randomx_from_source
+}
+
+build_randomx_from_source() {
   DEPS_DIR="$(pwd)/deps"
   RANDOMX_DIR="$DEPS_DIR/RandomX"
 
@@ -143,10 +201,17 @@ build_randomx() {
   cmake --build . --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
   cd - >/dev/null
 
-  RANDOMX_LIB="$RANDOMX_DIR/build"
-  RANDOMX_INC="$RANDOMX_DIR/src"
+  # Also install into precompiled directory for future use
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  PRECOMPILED_DIR="$SCRIPT_DIR/third_party/randomx"
+  mkdir -p "$PRECOMPILED_DIR/include"
+  mkdir -p "$PRECOMPILED_DIR/lib/$PLATFORM"
 
-  info "RandomX built successfully."
+  cp "$RANDOMX_DIR/build/$LIB_NAME" "$PRECOMPILED_DIR/lib/$PLATFORM/" 2>/dev/null || true
+  cp "$RANDOMX_DIR/src/randomx.h" "$PRECOMPILED_DIR/include/" 2>/dev/null || true
+
+  USE_PRECOMPILED=true
+  info "RandomX built and cached in $PRECOMPILED_DIR/"
 }
 
 # ── Build the Miner ───────────────────────────────────────────────────────
@@ -161,12 +226,12 @@ build_miner() {
     -DCMAKE_BUILD_TYPE=Release
   )
 
-  # Help CMake find RandomX
-  if [[ -d "${RANDOMX_DIR:-}" ]]; then
-    CMAKE_ARGS+=(
-      -DRANDOMX_INCLUDE_DIR="$RANDOMX_INC"
-      -DRANDOMX_LIBRARY="$RANDOMX_LIB/librandomx.a"
-    )
+  if [[ "${USE_PRECOMPILED:-false}" == "true" ]]; then
+    CMAKE_ARGS+=(-DUSE_PRECOMPILED_RANDOMX=ON)
+    info "Using precompiled RandomX libraries."
+  else
+    CMAKE_ARGS+=(-DUSE_PRECOMPILED_RANDOMX=OFF)
+    info "RandomX will be built via FetchContent."
   fi
 
   # macOS: help find OpenSSL from Homebrew
@@ -220,6 +285,13 @@ summary() {
   echo -e "    ./build/ai-monero-miner"
   echo -e "    ./build/ai-monero-miner --config /path/to/config.json"
   echo ""
+  echo -e "  ${BOLD}Options used:${NC}"
+  if [[ "${USE_PRECOMPILED:-false}" == "true" ]]; then
+    echo -e "    ⚡ RandomX: precompiled (fast install)"
+  else
+    echo -e "    🔧 RandomX: built from source"
+  fi
+  echo ""
   echo -e "${CYAN}══════════════════════════════════════════════════════${NC}"
 }
 
@@ -229,7 +301,7 @@ main() {
   check_root
   detect_os
   install_deps
-  build_randomx
+  setup_randomx
   build_miner
   setup_config
   summary
